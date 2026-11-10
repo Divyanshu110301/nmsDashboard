@@ -1,0 +1,9 @@
+.DS_Store
+.env
+.env.*
+
+# Never commit data exports or company seed data
+*private*.sql
+seed-*.sql
+*.json
+*.csv
