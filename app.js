@@ -165,15 +165,132 @@
     if (channel) await supabase.removeChannel(channel); clearInterval(refreshTimer);
     await supabase.auth.signOut(); appShell.classList.add('hidden'); authShell.classList.remove('hidden'); $('loginPassword').value='';
   }
+  const REMEMBER_EMAIL_KEY = 'cppFreeFunctionsRememberedEmail';
+  let recoveryForm = null;
+  let recoveryMessage = null;
+
+  function addLoginExtras() {
+    const form = $('loginForm');
+    const submitButton = form.querySelector('button[type="submit"], input[type="submit"]');
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:12px 0 16px;font-size:14px;';
+    row.innerHTML = `
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+        <input id="rememberEmail" type="checkbox" style="width:auto;margin:0;">
+        <span>Remember email</span>
+      </label>
+      <button id="forgotPasswordBtn" type="button" style="padding:0;border:0;background:none;color:#38bdf8;cursor:pointer;font:inherit;">Forgot password?</button>`;
+    if (submitButton) form.insertBefore(row, submitButton); else form.appendChild(row);
+
+    let rememberedEmail = '';
+    try { rememberedEmail = localStorage.getItem(REMEMBER_EMAIL_KEY) || ''; } catch (_) {}
+    if (rememberedEmail) {
+      $('loginEmail').value = rememberedEmail;
+      $('rememberEmail').checked = true;
+    }
+    $('rememberEmail').addEventListener('change', () => {
+      try {
+        if ($('rememberEmail').checked) localStorage.setItem(REMEMBER_EMAIL_KEY, $('loginEmail').value.trim());
+        else localStorage.removeItem(REMEMBER_EMAIL_KEY);
+      } catch (_) {}
+    });
+    $('loginEmail').addEventListener('change', () => {
+      if ($('rememberEmail').checked) {
+        try { localStorage.setItem(REMEMBER_EMAIL_KEY, $('loginEmail').value.trim()); } catch (_) {}
+      }
+    });
+    $('forgotPasswordBtn').addEventListener('click', sendPasswordReset);
+
+    recoveryForm = document.createElement('form');
+    recoveryForm.id = 'passwordRecoveryForm';
+    recoveryForm.hidden = true;
+    recoveryForm.style.cssText = 'margin-top:18px;';
+    recoveryForm.innerHTML = `
+      <h2 style="margin:0 0 8px;">Set a new password</h2>
+      <p style="margin:0 0 18px;opacity:.8;">Choose a new password for your account.</p>
+      <label for="newPassword" style="display:block;margin:12px 0 6px;">New password</label>
+      <input id="newPassword" type="password" autocomplete="new-password" minlength="6" required style="width:100%;box-sizing:border-box;">
+      <label for="confirmNewPassword" style="display:block;margin:12px 0 6px;">Confirm new password</label>
+      <input id="confirmNewPassword" type="password" autocomplete="new-password" minlength="6" required style="width:100%;box-sizing:border-box;">
+      <p id="recoveryMessage" role="status" style="margin:12px 0;"></p>
+      <button type="submit" style="width:100%;margin-top:8px;">Update password</button>`;
+    form.insertAdjacentElement('afterend', recoveryForm);
+    recoveryMessage = $('recoveryMessage');
+    recoveryForm.addEventListener('submit', updatePassword);
+  }
+
+  async function sendPasswordReset() {
+    const email = $('loginEmail').value.trim();
+    if (!email) { setAuthMessage('Enter your email address first, then select Forgot password.'); $('loginEmail').focus(); return; }
+    const button = $('forgotPasswordBtn');
+    button.disabled = true;
+    setAuthMessage('Sending password reset email…', false);
+    try {
+      const redirectTo = window.location.origin + window.location.pathname;
+      const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+      if (error) throw error;
+      setAuthMessage('Password reset email sent. Open the link in your email to set a new password.', false);
+    } catch (error) {
+      setAuthMessage(error.message || 'Could not send password reset email.');
+    } finally { button.disabled = false; }
+  }
+
+  function showPasswordRecovery() {
+    $('loginForm').hidden = true;
+    recoveryForm.hidden = false;
+    if (recoveryMessage) recoveryMessage.textContent = '';
+    const authMessage = $('authMessage');
+    if (authMessage) authMessage.textContent = '';
+    $('newPassword').focus();
+  }
+
+  async function updatePassword(event) {
+    event.preventDefault();
+    const password = $('newPassword').value;
+    const confirmPassword = $('confirmNewPassword').value;
+    if (password.length < 6) { recoveryMessage.textContent = 'Password must be at least 6 characters.'; return; }
+    if (password !== confirmPassword) { recoveryMessage.textContent = 'Passwords do not match.'; return; }
+    const button = recoveryForm.querySelector('button[type="submit"]');
+    button.disabled = true;
+    recoveryMessage.textContent = 'Updating password…';
+    try {
+      const { error } = await supabase.auth.updateUser({ password });
+      if (error) throw error;
+      await supabase.auth.signOut();
+      recoveryForm.hidden = true;
+      $('loginForm').hidden = false;
+      recoveryForm.reset();
+      $('loginPassword').value = '';
+      setAuthMessage('Password updated. Sign in using your new password.', false);
+    } catch (error) {
+      recoveryMessage.textContent = error.message || 'Could not update password.';
+    } finally { button.disabled = false; }
+  }
+
   async function init() {
     if (!window.supabase || !cfg.url || !cfg.publishableKey || cfg.url.includes('YOUR_PROJECT_REF') || cfg.publishableKey.includes('REPLACE_WITH')) {
       setAuthMessage('Setup required: add your Supabase Project URL and publishable key to config.js.'); return;
     }
     supabase=window.supabase.createClient(cfg.url,cfg.publishableKey,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}});
-    $('loginForm').addEventListener('submit',async e=>{e.preventDefault();setAuthMessage('Signing in…',false);const {data,error}=await supabase.auth.signInWithPassword({email:$('loginEmail').value.trim(),password:$('loginPassword').value});if(error){setAuthMessage(error.message);return;}setAuthMessage('');await showApp(data.session);});
+    addLoginExtras();
+    $('loginForm').addEventListener('submit',async e=>{
+      e.preventDefault();
+      const email = $('loginEmail').value.trim();
+      if ($('rememberEmail').checked) { try { localStorage.setItem(REMEMBER_EMAIL_KEY, email); } catch (_) {} }
+      else { try { localStorage.removeItem(REMEMBER_EMAIL_KEY); } catch (_) {} }
+      setAuthMessage('Signing in…',false);
+      const {data,error}=await supabase.auth.signInWithPassword({email,password:$('loginPassword').value});
+      if(error){setAuthMessage(error.message);return;}
+      setAuthMessage(''); await showApp(data.session);
+    });
     $('signOutBtn').addEventListener('click',signOut);
-    supabase.auth.onAuthStateChange((_event,session)=>{if(session && appShell.classList.contains('hidden')) showApp(session);});
-    const {data:{session}}=await supabase.auth.getSession(); if(session) await showApp(session);
+    supabase.auth.onAuthStateChange((event,session)=>{
+      if (event === 'PASSWORD_RECOVERY') { showPasswordRecovery(); return; }
+      if(session && appShell.classList.contains('hidden') && !recoveryForm?.hidden) return;
+      if(session && appShell.classList.contains('hidden')) showApp(session);
+    });
+    const {data:{session}}=await supabase.auth.getSession();
+    if (session) await showApp(session);
   }
   populatePeople();
   $('addBtn').addEventListener('click',openAdd); $('closeDialog').addEventListener('click',()=>dialog.close()); $('cancelDialog').addEventListener('click',()=>dialog.close()); $('functionForm').addEventListener('submit',saveRecord);
